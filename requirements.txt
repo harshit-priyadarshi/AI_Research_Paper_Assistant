@@ -1,4 +1,0 @@
-openai
-faiss-cpu
-pymupdf
-tqdm

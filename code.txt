@@ -1,0 +1,314 @@
+#query.py ---> Code base (before improvements)
+import faiss
+import numpy as np
+import os
+import google.generativeai as genai
+from sentence_transformers import SentenceTransformer
+
+embed_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+genai.configure(api_key=os.getenv("Gemini_API_Key"))
+model = genai.GenerativeModel("models/gemini-2.5-flash")
+
+DB_PATH = "db/index.faiss"
+
+def load_chunks():
+    with open("db/chunks.txt", "r", encoding="utf-8") as f:
+        return f.read().split("\n---\n")
+
+def get_embedding(text):
+    return embed_model.encode(text).astype("float32")
+
+def search(query, k=5, paper_name=None):
+    index = faiss.read_index(DB_PATH)
+    chunks = load_chunks()
+
+    query_emb = np.array([get_embedding(query)])
+
+    distances, indices = index.search(query_emb, k*3)
+
+    results = []
+    for i in indices[0]:
+        chunk = chunks[i]
+
+        if paper_name:
+            if paper_name in chunk:
+                results.append(chunk)
+        else:
+            results.append(chunk)
+
+        if len(results) >= k:
+            break
+
+    return results
+
+# MCP 1: Summarizer
+def summarize(context):
+    prompt = f"""
+    Summarize this research paper in simple terms.
+
+    Focus on:
+    - Problem
+    - Approach
+    - Key results
+
+    Context:
+    {context}
+    """
+
+    response = model.generate_content(prompt)
+    return response.text
+
+#MCP 2: Compare two papers
+def compare_papers(context1, context2):
+    prompt = f"""
+    You are comparing two research papers STRICTLY based on the provided content.
+
+    Do NOT assume or guess anything outside the given text.
+
+    Paper 1:
+    {context1}
+
+    Paper 2:
+    {context2}
+
+    Compare them based only on the content:
+
+    1. Problem addressed
+    2. Methodology
+    3. Key contributions
+    4. Strengths and weaknesses
+    5. Key differences
+
+    If information is missing, explicitly say "Not enough information".
+
+    Be precise and structured.
+    """
+
+    response = model.generate_content(prompt)
+    return response.text
+
+#3. MCP 3: Implementation
+def implementation_steps(context):
+    prompt = f"""
+    Based ONLY on the following research paper content:
+
+    {context}
+
+    Create a MODERN implementation guide:
+
+    1. Step-by-step implementation
+    2. Suggested tech stack
+    3. Model/algorithm structure (map original idea → modern equivalent)
+    4. Dataset requirements
+    5. Practical challenges
+
+    IMPORTANT:
+    - Stay grounded in the paper’s ideas
+    - If translating to modern ML (e.g., transformers, RL), explain WHY
+    - Do NOT assume unrelated architectures unless justified
+
+    Be practical and precise.
+    """
+
+    response = model.generate_content(prompt)
+    return response.text
+
+#4. MCP 4:Research_gaps
+def research_gaps(context):
+    prompt = f"""
+    Based ONLY on the following research paper content:
+
+    {context}
+
+    Analyze critically:
+
+    1. Limitations of the approach
+    2. What is missing or not addressed
+    3. Weak assumptions (if any)
+    4. Possible improvements
+    5. Future research directions
+
+    IMPORTANT:
+    - Be critical, not descriptive
+    - Do NOT repeat summary
+    - Focus on gaps and weaknesses
+
+    Be precise.
+    """
+
+    response = model.generate_content(prompt)
+    return response.text
+
+
+def classify_paper(context):
+    context_lower = context.lower()
+
+    if any(word in context_lower for word in [
+        "theorem", "proof", "computable", "turing machine",
+        "formal", "mathematical", "lemma", "undecidable"
+    ]):
+        return "theoretical"
+
+    elif any(word in context_lower for word in [
+        "dataset", "accuracy", "benchmark", "training data"
+    ]):
+        return "ml_experimental"
+
+    elif any(word in context_lower for word in [
+        "survey", "review", "literature"
+    ]):
+        return "survey"
+
+    elif any(word in context_lower for word in [
+        "architecture", "pipeline", "deployment"
+    ]):
+        return "systems"
+
+    else:
+        return "unknown"
+
+def main():
+    mode = input("Choose mode (1: Summarize, 2: Compare, 3: Implementation, 4: Research Gaps): ").strip()
+
+    if mode == "1":
+        paper = input("Enter paper name: ").strip()
+        question = input("Ask: ").strip()
+
+        results = search(question, paper_name=paper)
+        context = "\n\n".join(results)
+
+        answer = summarize(context)
+        print("\nAnswer:\n", answer)
+
+    elif mode == "2":
+        paper1 = input("Enter first paper name: ").strip()
+        paper2 = input("Enter second paper name: ").strip()
+
+        query_text = "main problem methodology contributions results limitations"
+        results1 = search(query_text, paper_name=paper1, k=8)
+        results2 = search(query_text, paper_name=paper2, k=8)
+
+        if not results1:
+            print(f"No content found for {paper1}")
+            return
+
+        if not results2:
+            print(f"No content found for {paper2}")
+            return
+
+        context1 = "\n\n".join(results1)
+        context2 = "\n\n".join(results2)
+
+        answer = compare_papers(context1, context2)
+        print("\nComparison:\n", answer)
+
+    elif mode == "3":
+        paper = input("Enter paper name: ").strip()
+
+        query_text = """
+        implementation steps architecture components algorithm procedure
+        learning mechanism training process evaluation limitations
+        """
+
+        results = search(query_text, paper_name=paper, k=8)
+
+        if not results:
+            print(f"No content found for {paper}")
+            return
+
+        context = "\n\n".join(results)
+
+        answer = implementation_steps(context)
+        print("\nImplementation Guide:\n", answer)
+
+    elif mode == "4":
+    paper = input("Enter paper name: ").strip()
+
+    results = search(
+        "limitations drawbacks assumptions future work challenges",
+        paper_name=paper,
+        k=8
+    )
+
+    if not results:
+        print(f"No content found for {paper}")
+        return
+
+        context = "\n\n".join(results)
+
+        answer = research_gaps(context)
+
+        print("\nResearch Gaps:\n", answer)
+
+    else:
+        print("Invalid mode")
+
+if __name__ == "__main__":
+    main()
+
+-------------------------------------------------------------------------------------------------
+#ingest.py ---> Code base (before improvements)
+
+import fitz  # PyMuPDF
+import os
+import faiss
+import numpy as np
+from sentence_transformers import SentenceTransformer
+
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
+DATA_PATH = "Research_papers/"
+DB_PATH = "db/index.faiss"
+
+def extract_text(pdf_path):
+    doc = fitz.open(pdf_path)
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    return text
+
+def chunk_text(text, chunk_size=500):
+    words = text.split()
+    chunks = []
+    for i in range(0, len(words), chunk_size):
+        chunks.append(" ".join(words[i:i+chunk_size]))
+    return chunks
+
+def get_embedding(text):
+    return model.encode(text)
+
+def main():
+    all_chunks = []
+    embeddings = []
+
+    for file in os.listdir(DATA_PATH):
+        if file.endswith(".pdf"):
+            path = os.path.join(DATA_PATH, file)
+            print(f"Processing {file}")
+
+            text = extract_text(path)
+            chunks = chunk_text(text)
+
+            for chunk in chunks:
+                emb = get_embedding(chunk)
+                embeddings.append(emb.astype("float32"))
+                all_chunks.append(f"[{file}] {chunk}")
+
+    dim = len(embeddings[0])
+    index = faiss.IndexFlatL2(dim)
+
+    index.add(np.array(embeddings))
+
+    os.makedirs("db", exist_ok=True)
+
+    faiss.write_index(index, DB_PATH)
+
+    with open("db/chunks.txt", "w", encoding="utf-8") as f:
+        for chunk in all_chunks:
+            f.write(chunk.replace("\n", " ") + "\n---\n")
+
+    print("Ingestion complete!")
+
+if __name__ == "__main__":
+    main()
